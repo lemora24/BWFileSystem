@@ -3,6 +3,9 @@
 
 #define FUSE_USE_VERSION 31
 #include <fuse3/fuse.h>
+struct bwfs_config {
+    const char *folder;
+};
 void *bwfs_init(struct fuse_conn_info *conn, struct fuse_config *cfg);
 int bwfs_getattr(const char *path, struct stat *stbuf, struct fuse_file_info *fi);
 int bwfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,

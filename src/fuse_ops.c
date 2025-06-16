@@ -1,16 +1,25 @@
+#define FUSE_USE_VERSION 31
 #include <stdio.h>
 #include <string.h>
 #include <errno.h>
 #include <sys/stat.h>
-#include "../includes/fuse_ops.h"
 #include <fcntl.h>
 #include <linux/stat.h>
+#include <fuse3/fuse.h>
+#include "../includes/fuse_ops.h"
 #include "../includes/bwfs.h"
 #include "../includes/utils.h"
-extern char *bwfs_folder;
+
+// Contexto persistente del folder (asignado en init)
+static const char *bwfs_folder = NULL;
+
 void *bwfs_init(struct fuse_conn_info *conn, struct fuse_config *cfg) {
     (void) conn;
     cfg->kernel_cache = 0;
+
+    const struct bwfs_config *conf = fuse_get_context()->private_data;
+    bwfs_folder = conf->folder;
+
     printf("🎮 BWFS montado correctamente.\n");
     return NULL;
 }
@@ -30,16 +39,29 @@ int bwfs_getattr(const char *path, struct stat *stbuf, struct fuse_file_info *fi
 
 int bwfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
                  off_t offset, struct fuse_file_info *fi, enum fuse_readdir_flags flags) {
-    (void) offset;
-    (void) fi;
-    (void) flags;
+    (void)offset;
+    (void)fi;
+    (void)flags;
+
+    if (!bwfs_folder) {
+        fprintf(stderr, "❌ Error: bwfs_folder es NULL en readdir\n");
+        return -EIO;
+    }
 
     if (strcmp(path, "/") != 0)
         return -ENOENT;
 
     filler(buf, ".", NULL, 0, 0);
     filler(buf, "..", NULL, 0, 0);
-    // Aquí agregarás archivos reales luego
+
+    inode_t inodes[BWFS_INODES];
+    int count = load_inodes(bwfs_folder, inodes);
+
+    for (int i = 0; i < count; ++i) {
+        if (inodes[i].used && inodes[i].is_directory) {
+            filler(buf, inodes[i].filename, NULL, 0, 0);
+        }
+    }
 
     return 0;
 }
@@ -47,15 +69,20 @@ int bwfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 int bwfs_mkdir(const char *path, mode_t mode) {
     (void) mode;
 
+    if (!bwfs_folder) {
+        fprintf(stderr, "❌ Error: bwfs_folder es NULL en mkdir\n");
+        return -EIO;
+    }
+
     printf("📁 mkdir: %s\n", path);
 
     if (strcmp(path, "/") == 0)
         return -EEXIST;
 
-    // Extraer nombre sin slash inicial
     const char *name = path + 1;
 
     int idx = find_free_inode(bwfs_folder);
+    printf("🔍 Resultado de find_free_inode(): %d\n", idx);
     if (idx < 0) return -ENOSPC;
 
     inode_t new_inode = {0};
@@ -67,15 +94,28 @@ int bwfs_mkdir(const char *path, mode_t mode) {
     new_inode.modified_at = time(NULL);
 
     save_inode(bwfs_folder, idx, &new_inode);
+    printf("📌 Asignando inodo #%d para %s\n", idx, name);
 
-    // Actualizar bitmap de inodos
     char bpath[256];
     snprintf(bpath, sizeof(bpath), "%s/block_%03d.pbm", bwfs_folder, 1 + INODE_BLOCKS);
     FILE *f = fopen(bpath, "r+b");
+    if (!f)
+        return -EIO;
+
     fseek(f, -BWFS_INODES, SEEK_END);
     uint8_t bitmap[BWFS_INODES];
     fread(bitmap, sizeof(uint8_t), BWFS_INODES, f);
+
+    printf("🧾 Bitmap antes: ");
+    for (int i = 0; i < 10; ++i) printf("%d", bitmap[i]);
+    printf("\n");
+
     bitmap[idx] = 1;
+
+    printf("🧾 Bitmap después: ");
+    for (int i = 0; i < 10; ++i) printf("%d", bitmap[i]);
+    printf("\n");
+
     fseek(f, -BWFS_INODES, SEEK_END);
     fwrite(bitmap, sizeof(uint8_t), BWFS_INODES, f);
     fclose(f);
