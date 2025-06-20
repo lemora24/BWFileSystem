@@ -22,10 +22,9 @@ void write_blank_block(const char *path, int block_num) {
     // Imagen PBM en modo texto P1
     fprintf(f, "P1\n");
     fprintf(f, "# Bloque BWFS %d\n", block_num);
-    fprintf(f, "32 32\n");  // tamaño simple: 32x32 px
-    for (int i = 0; i < 32 * 32; ++i)
-        fprintf(f, "0%c", ((i + 1) % 32 == 0) ? '\n' : ' ');
-
+    fprintf(f, "1000 1000\n");  // tamaño de bloque: 1000x1000 px
+    for (int i = 0; i < 100 * 100; ++i)
+        fprintf(f, "0%c", ((i + 1) % 100 == 0) ? '\n' : ' ');
     fclose(f);
 }
 
