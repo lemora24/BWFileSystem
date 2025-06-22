@@ -25,6 +25,7 @@ typedef struct {
     uint8_t  used;                         // 1 = ocupado, 0 = libre
     uint8_t  is_directory;                // 1 = dir, 0 = archivo
     char     filename[BWFS_FILENAME];     // Nombre del archivo
+    int index_block; // bloque que contiene la lista de bloques de datos
     uint32_t size;                        // Tamaño del archivo (en bytes)
     uint32_t blocks[12];                  // Bloques directos
     uint32_t created_at;                  // Fecha de creación (timestamp UNIX)

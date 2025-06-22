@@ -22,7 +22,7 @@ void write_blank_block(const char *path, int block_num) {
     fprintf(f, "P1\n");
     fprintf(f, "# Bloque BWFS %d\n", block_num);
     fprintf(f, "1000 1000\n");  // tamaño de bloque: 1000x1000 px
-    for (int i = 0; i < 100 * 100; ++i)
+    for (int i = 0; i < 1000 * 1000; ++i)
         fprintf(f, "0%c", ((i + 1) % 100 == 0) ? '\n' : ' ');
     fclose(f);
 }

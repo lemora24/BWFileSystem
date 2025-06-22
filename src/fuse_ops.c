@@ -248,7 +248,7 @@ int bwfs_utimens(const char *path, const struct timespec tv[2], struct fuse_file
 
 int bwfs_write(const char *path, const char *buf, size_t size, off_t offset, struct fuse_file_info *fi) {
     (void)fi;
-    printf("✏️ write: %s (%ld bytes)\n", path, size);
+    printf("✏️ write: %s (offset: %ld, size: %ld)\n", path, offset, size);
 
     const char *name = path + 1;
     inode_t inodes[BWFS_INODES];
@@ -256,27 +256,67 @@ int bwfs_write(const char *path, const char *buf, size_t size, off_t offset, str
 
     for (int i = 0; i < count; ++i) {
         if (inodes[i].used && strcmp(inodes[i].filename, name) == 0) {
-            // Encontramos el archivo
-            int block = find_free_block(bwfs_folder);
-            if (block < 0) return -ENOSPC;
+            int block = inodes[i].blocks[0];
 
-            // Guardar contenido
+            // Si no hay bloque asignado aún, pedimos uno
+            if (block < 0 || block >= BLOCK_COUNT) {
+                block = find_free_block(bwfs_folder);
+                if (block < 0) return -ENOSPC;
+                inodes[i].blocks[0] = block;
+            }
+
             char filepath[256];
             snprintf(filepath, sizeof(filepath), "%s/block_%03d.pbm", bwfs_folder, block);
-            FILE *f = fopen(filepath, "r+b");
+
+            // Leer encabezado y datos existentes
+            FILE *f = fopen(filepath, "r");
             if (!f) return -EIO;
 
-            fseek(f, 0, SEEK_SET);
-            fwrite(buf, 1, size, f);
+            // Saltar encabezado
+            char line1[64], line2[64], line3[64];
+            fgets(line1, sizeof(line1), f);
+            fgets(line2, sizeof(line2), f);
+            fgets(line3, sizeof(line3), f);
+
+            // Leer todo el bitmap actual (hasta 1000000 bits = 125000 bytes)
+            unsigned char current_data[125000] = {0};
+            int bit_index = 0;
+            char ch;
+            while (fscanf(f, " %c", &ch) == 1 && bit_index < 1000000) {
+                if (ch != '0' && ch != '1') continue;
+                int byte_idx = bit_index / 8;
+                current_data[byte_idx] = (current_data[byte_idx] << 1) | (ch - '0');
+                bit_index++;
+            }
             fclose(f);
 
-            // Asociar bloque al inodo
-            inodes[i].blocks[0] = block;
-            inodes[i].size = size;
+            // Insertar nuevos datos respetando offset
+            if (offset + size > sizeof(current_data))
+                size = sizeof(current_data) - offset;  // evitar overflow
+
+            memcpy(current_data + offset, buf, size);
+
+            // Reescribir el archivo desde cero
+            f = fopen(filepath, "w");
+            if (!f) return -EIO;
+
+            fprintf(f, "P1\n# Bloque BWFS\n1000 1000\n");
+            int written_bits = 0;
+            for (int i = 0; i < sizeof(current_data) && written_bits < 1000000; ++i) {
+                for (int b = 7; b >= 0 && written_bits < 1000000; --b) {
+                    int bit = (current_data[i] >> b) & 1;
+                    fprintf(f, "%d ", bit);
+                    written_bits++;
+                    if (written_bits % 1000 == 0) fprintf(f, "\n");
+                }
+            }
+
+            fclose(f);
+
+            inodes[i].size = (offset + size > inodes[i].size) ? (offset + size) : inodes[i].size;
             inodes[i].modified_at = time(NULL);
             save_inode(bwfs_folder, i, &inodes[i]);
 
-            // Marcar bloque como usado
             update_bitmap_block(bwfs_folder, block, 1);
 
             return size;
@@ -291,10 +331,8 @@ int bwfs_read(const char *path, char *buf, size_t size, off_t offset, struct fus
 
     printf("📖 read: %s (offset: %ld, size: %zu)\n", path, offset, size);
 
-    if (!bwfs_folder) {
-        fprintf(stderr, "❌ Error: bwfs_folder es NULL en read\n");
+    if (!bwfs_folder)
         return -EIO;
-    }
 
     const char *name = path + 1;
     inode_t inodes[BWFS_INODES];
@@ -303,32 +341,55 @@ int bwfs_read(const char *path, char *buf, size_t size, off_t offset, struct fus
     for (int i = 0; i < count; ++i) {
         if (inodes[i].used && strcmp(inodes[i].filename, name) == 0) {
             if (offset >= inodes[i].size)
-                return 0;  // Nada que leer
+                return 0;
 
             int bytes_to_read = (offset + size > inodes[i].size) ? (inodes[i].size - offset) : size;
-
-            // Usar el primer bloque asignado al archivo
             int block = inodes[i].blocks[0];
-            if (block < 0 || block >= BLOCK_COUNT) {
-                fprintf(stderr, "❌ Error: bloque inválido en inodo\n");
+
+            if (block < 0 || block >= BLOCK_COUNT)
                 return -EIO;
+
+            char filepath[256];
+            snprintf(filepath, sizeof(filepath), "%s/block_%03d.pbm", bwfs_folder, block);
+
+            FILE *f = fopen(filepath, "r");
+            if (!f)
+                return -EIO;
+
+            // Saltar encabezado (3 líneas)
+            char header[256];
+            fgets(header, sizeof(header), f);  // P1
+            fgets(header, sizeof(header), f);  // # comentario
+            fgets(header, sizeof(header), f);  // dimensiones
+
+            int bit_index = 0, byte_index = 0;
+            unsigned char byte = 0;
+            char bitchar;
+            while ((fscanf(f, " %c", &bitchar) == 1) && byte_index < (int)(offset + bytes_to_read)) {
+                if (bitchar != '0' && bitchar != '1')
+                    continue;
+
+                byte = (byte << 1) | (bitchar - '0');
+                bit_index++;
+
+                if (bit_index == 8) {
+                    if (byte_index >= (int)offset)
+                        buf[byte_index - offset] = byte;
+                    byte_index++;
+                    bit_index = 0;
+                    byte = 0;
+                }
             }
 
-            char fullpath[256];
-            snprintf(fullpath, sizeof(fullpath), "%s/block_%03d.pbm", bwfs_folder, block);
-
-            FILE *f = fopen(fullpath, "rb");
-            if (!f) {
-                perror("❌ fopen falló en read");
-                return -EIO;
+            if (bit_index > 0 && byte_index >= (int)offset && byte_index < (int)(offset + bytes_to_read)) {
+                byte <<= (8 - bit_index);
+                buf[byte_index - offset] = byte;
+                byte_index++;
             }
 
-            fseek(f, offset, SEEK_SET);
-            size_t read = fread(buf, 1, bytes_to_read, f);
             fclose(f);
-
-            printf("✅ Se leyeron %zu bytes del archivo %s\n", read, name);
-            return read;
+            printf("✅ Se leyeron %d bytes\n", byte_index - offset);
+            return byte_index - offset;
         }
     }
 
