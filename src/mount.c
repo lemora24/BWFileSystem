@@ -33,6 +33,10 @@ int main(int argc, char *argv[]) {
         .getattr  = bwfs_getattr,
         .readdir  = bwfs_readdir,
         .mkdir    = bwfs_mkdir,
+        .create = bwfs_create,
+        .utimens = bwfs_utimens,
+        .write = bwfs_write,
+        .read   = bwfs_read,
     };
 
     char *fuse_argv[] = {

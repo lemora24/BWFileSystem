@@ -5,7 +5,6 @@
 #include <sys/stat.h>
 #include "../includes/bwfs.h"
 
-#define BLOCK_COUNT  128  // cantidad total de bloques
 #define INODE_BLOCKS 4    // bloques reservados para inodos
 #define BITMAP_BLOCK 1    // bloque reservado para bitmaps
 

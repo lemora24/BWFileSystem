@@ -103,3 +103,45 @@ int find_free_inode(const char *folder) {
 
     return -1;
 }
+int find_free_block(const char *folder) {
+    char bpath[256];
+    snprintf(bpath, sizeof(bpath), "%s/block_%03d.pbm", folder, 1 + INODE_BLOCKS);
+
+    FILE *f = fopen(bpath, "rb");
+    if (!f) {
+        perror("❌ Error abriendo archivo de bitmap de bloques");
+        return -1;
+    }
+
+    fseek(f, -BWFS_MAX_BLOCKS - BWFS_INODES, SEEK_END);  // ir al inicio del bitmap de bloques
+    uint8_t block_bitmap[BWFS_MAX_BLOCKS];
+    fread(block_bitmap, sizeof(uint8_t), BWFS_MAX_BLOCKS, f);
+    fclose(f);
+
+    for (int i = 0; i < BWFS_MAX_BLOCKS; ++i) {
+        if (block_bitmap[i] == 0)
+            return i;
+    }
+
+    return -1;  // no hay bloques libres
+}
+void update_bitmap_block(const char *folder, int block, int used) {
+    char bpath[256];
+    snprintf(bpath, sizeof(bpath), "%s/block_%03d.pbm", folder, 1 + INODE_BLOCKS);
+
+    FILE *f = fopen(bpath, "r+b");
+    if (!f) {
+        perror("❌ Error actualizando bitmap de bloques");
+        return;
+    }
+
+    fseek(f, -BWFS_MAX_BLOCKS - BWFS_INODES, SEEK_END);
+    uint8_t block_bitmap[BWFS_MAX_BLOCKS];
+    fread(block_bitmap, sizeof(uint8_t), BWFS_MAX_BLOCKS, f);
+
+    block_bitmap[block] = used;
+
+    fseek(f, -BWFS_MAX_BLOCKS - BWFS_INODES, SEEK_END);
+    fwrite(block_bitmap, sizeof(uint8_t), BWFS_MAX_BLOCKS, f);
+    fclose(f);
+}

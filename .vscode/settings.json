@@ -1,6 +1,7 @@
 {
     "files.associations": {
         "stat.h": "c",
-        "bwfs.h": "c"
+        "bwfs.h": "c",
+        "utils.h": "c"
     }
 }
