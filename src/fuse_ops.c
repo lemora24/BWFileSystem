@@ -395,3 +395,354 @@ int bwfs_read(const char *path, char *buf, size_t size, off_t offset, struct fus
 
     return -ENOENT;
 }
+
+int bwfs_unlink(const char *path) {
+    printf("❌ unlink: %s\n", path);
+
+    if (!bwfs_folder) {
+        fprintf(stderr, "❌ Error: bwfs_folder es NULL en unlink\n");
+        return -EIO;
+    }
+
+    const char *name = path + 1;
+    inode_t inodes[BWFS_INODES];
+    int count = load_inodes(bwfs_folder, inodes);
+
+    for (int i = 0; i < count; ++i) {
+        if (inodes[i].used && !inodes[i].is_directory && strcmp(inodes[i].filename, name) == 0) {
+            int block = inodes[i].blocks[0];
+
+            // iberar bloque si existe
+            if (block >= 0 && block < BLOCK_COUNT) {
+                update_bitmap_block(bwfs_folder, block, 0);
+                printf("🧹 Bloque %d liberado\n", block);
+            }
+
+            // Limpiar el inodo
+            memset(&inodes[i], 0, sizeof(inode_t));
+            save_inode(bwfs_folder, i, &inodes[i]);
+            printf("🗑️ Inodo %d limpiado\n", i);
+
+            // Actualizar bitmap de inodos
+            char bpath[256];
+            snprintf(bpath, sizeof(bpath), "%s/block_%03d.pbm", bwfs_folder, 1 + INODE_BLOCKS);
+            FILE *f = fopen(bpath, "r+b");
+            if (!f)
+                return -EIO;
+
+            fseek(f, -BWFS_INODES, SEEK_END);
+            uint8_t bitmap[BWFS_INODES];
+            fread(bitmap, sizeof(uint8_t), BWFS_INODES, f);
+
+            bitmap[i] = 0;
+
+            fseek(f, -BWFS_INODES, SEEK_END);
+            fwrite(bitmap, sizeof(uint8_t), BWFS_INODES, f);
+            fclose(f);
+
+            printf("✅ Archivo '%s' eliminado correctamente\n", name);
+            return 0;
+        }
+    }
+
+    return -ENOENT;
+}
+int bwfs_rmdir(const char *path) {
+    printf("🧺 rmdir: %s\n", path);
+
+    if (!bwfs_folder) {
+        fprintf(stderr, "❌ Error: bwfs_folder es NULL en rmdir\n");
+        return -EIO;
+    }
+
+    if (strcmp(path, "/") == 0)
+        return -EBUSY;  // no se puede eliminar la raíz
+
+    const char *name = path + 1;
+    inode_t inodes[BWFS_INODES];
+    int count = load_inodes(bwfs_folder, inodes);
+    int target = -1;
+
+    // Buscar el directorio por nombre
+    for (int i = 0; i < count; ++i) {
+        if (inodes[i].used && inodes[i].is_directory &&
+            strcmp(inodes[i].filename, name) == 0) {
+            target = i;
+            break;
+        }
+    }
+
+    if (target == -1)
+        return -ENOENT;
+
+    // Verificar que esté vacío (sin archivos o subdirectorios asociados)
+    for (int i = 0; i < count; ++i) {
+        if (inodes[i].used && i != target &&
+            strcmp(inodes[i].filename, name) == 0) {
+            return -ENOTEMPTY;
+        }
+    }
+
+    // Borrar el inodo
+    memset(&inodes[target], 0, sizeof(inode_t));
+    save_inode(bwfs_folder, target, &inodes[target]);
+    printf("🧽 Inodo %d del directorio '%s' eliminado\n", target, name);
+
+    // Actualizar bitmap de inodos
+    char bpath[256];
+    snprintf(bpath, sizeof(bpath), "%s/block_%03d.pbm", bwfs_folder, 1 + INODE_BLOCKS);
+    FILE *f = fopen(bpath, "r+b");
+    if (!f)
+        return -EIO;
+
+    fseek(f, -BWFS_INODES, SEEK_END);
+    uint8_t bitmap[BWFS_INODES];
+    fread(bitmap, sizeof(uint8_t), BWFS_INODES, f);
+
+    bitmap[target] = 0;
+
+    fseek(f, -BWFS_INODES, SEEK_END);
+    fwrite(bitmap, sizeof(uint8_t), BWFS_INODES, f);
+    fclose(f);
+
+    printf("✅ Carpeta '%s' eliminada correctamente\n", name);
+    return 0;
+}
+int bwfs_rename(const char *from, const char *to, unsigned int flags) {
+    (void)flags;
+    printf("✏️ rename: %s → %s\n", from, to);
+
+    if (!bwfs_folder)
+        return -EIO;
+
+    if (strcmp(from, "/") == 0)
+        return -EBUSY;
+
+    const char *name_from = from + 1;
+    const char *name_to = to + 1;
+
+    if (strlen(name_to) == 0 || strlen(name_to) >= BWFS_FILENAME)
+        return -EINVAL;
+
+    inode_t inodes[BWFS_INODES];
+    int count = load_inodes(bwfs_folder, inodes);
+
+    for (int i = 0; i < count; ++i) {
+        if (inodes[i].used && strcmp(inodes[i].filename, name_from) == 0) {
+
+            // Verificar que no exista otro archivo con el nombre nuevo
+            for (int j = 0; j < count; ++j) {
+                if (inodes[j].used && strcmp(inodes[j].filename, name_to) == 0)
+                    return -EEXIST;
+            }
+
+            // Renombrar
+            strncpy(inodes[i].filename, name_to, BWFS_FILENAME);
+            inodes[i].filename[BWFS_FILENAME - 1] = '\0';
+            inodes[i].modified_at = time(NULL);
+            save_inode(bwfs_folder, i, &inodes[i]);
+
+            printf("✅ Renombrado inodo %d: %s → %s\n", i, name_from, name_to);
+            return 0;
+        }
+    }
+
+    return -ENOENT;
+}
+int bwfs_opendir(const char *path, struct fuse_file_info *fi) {
+    printf("📂 opendir: %s\n", path);
+
+    if (!bwfs_folder)
+        return -EIO;
+
+    if (strcmp(path, "/") == 0)
+        return 0;  // raíz siempre válida
+
+    const char *name = path + 1;
+    inode_t inodes[BWFS_INODES];
+    int count = load_inodes(bwfs_folder, inodes);
+
+    for (int i = 0; i < count; ++i) {
+        if (inodes[i].used &&
+            inodes[i].is_directory &&
+            strcmp(inodes[i].filename, name) == 0) {
+            return 0;  // Directorio válido
+        }
+    }
+
+    return -ENOENT;  // No encontrado
+}
+int bwfs_statfs(const char *path, struct statvfs *stbuf) {
+    (void)path;  // no lo usamos directamente
+    printf("📊 statfs solicitado\n");
+
+    if (!bwfs_folder)
+        return -EIO;
+
+    memset(stbuf, 0, sizeof(struct statvfs));
+
+    // Cargar el superbloque
+    char superpath[256];
+    snprintf(superpath, sizeof(superpath), "%s/block_000.pbm", bwfs_folder);
+    FILE *f = fopen(superpath, "rb");
+    if (!f)
+        return -EIO;
+
+    fseek(f, 0, SEEK_END);
+    long size = ftell(f);
+    fseek(f, size - sizeof(superblock_t), SEEK_SET);
+    superblock_t sb;
+    fread(&sb, sizeof(superblock_t), 1, f);
+    fclose(f);
+
+    // Asumimos bloques de 125000 bytes útiles (1000x1000 bits)
+    stbuf->f_bsize = 125000;             // Tamaño de bloque
+    stbuf->f_frsize = 125000;            // Tamaño de fragmento
+    stbuf->f_blocks = sb.total_blocks;   // Total de bloques
+    stbuf->f_bfree = 0;                  // Lo calculamos ahora
+
+    // Cargar bitmap para contar bloques libres
+    char bmpath[256];
+    snprintf(bmpath, sizeof(bmpath), "%s/block_%03d.pbm", bwfs_folder, 1 + INODE_BLOCKS);
+    f = fopen(bmpath, "rb");
+    if (!f)
+        return -EIO;
+
+    fseek(f, 0, SEEK_END);
+    size = ftell(f);
+    if (size < BWFS_MAX_BLOCKS + BWFS_INODES) {
+        fclose(f);
+        return -EIO;
+    }
+
+    fseek(f, size - (BWFS_MAX_BLOCKS + BWFS_INODES), SEEK_SET);
+    uint8_t block_bitmap[BWFS_MAX_BLOCKS];
+    fread(block_bitmap, sizeof(uint8_t), BWFS_MAX_BLOCKS, f);
+    fclose(f);
+
+    int free_blocks = 0;
+    for (int i = 0; i < sb.total_blocks; ++i) {
+        if (block_bitmap[i] == 0)
+            free_blocks++;
+    }
+
+    stbuf->f_bfree = free_blocks;
+    stbuf->f_bavail = free_blocks;
+
+    // Inodos
+    stbuf->f_files = BWFS_INODES;
+    stbuf->f_ffree = 0;
+
+    for (int i = 0; i < BWFS_INODES; ++i) {
+        if (i >= sizeof(block_bitmap)) break;  // seguridad
+        if (block_bitmap[i] == 0)
+            stbuf->f_ffree++;
+    }
+
+    return 0;
+}
+
+int bwfs_fsync(const char *path, int isdatasync, struct fuse_file_info *fi) {
+    (void)isdatasync;
+    (void)fi;
+    printf("🔃 fsync: %s\n", path);
+
+    if (!bwfs_folder)
+        return -EIO;
+
+    return 0;
+}
+    // Como no usamos buffering, no hay nada que hacer realmente.
+
+int bwfs_flush(const char *path, struct fuse_file_info *fi) {
+    (void)fi;
+    printf("🧹 flush: %s\n", path);
+
+    return 0;
+}
+
+
+int bwfs_access(const char *path, int mask) {
+    printf("🔐 access: %s (mask: %d)\n", path, mask);
+
+    if (!bwfs_folder)
+        return -EIO;
+
+    if (strcmp(path, "/") == 0)
+        return 0;  // raíz siempre accesible
+
+    const char *name = path + 1;
+    inode_t inodes[BWFS_INODES];
+    int count = load_inodes(bwfs_folder, inodes);
+
+    for (int i = 0; i < count; ++i) {
+        if (inodes[i].used && strcmp(inodes[i].filename, name) == 0) {
+            return 0;
+        }
+    }
+
+    return -ENOENT;
+}
+
+off_t bwfs_lseek(const char *path, off_t offset, int whence, struct fuse_file_info *fi) {
+    (void)fi;
+    printf("📍 lseek: %s (offset: %ld, whence: %d)\n", path, offset, whence);
+
+    if (!bwfs_folder)
+        return -EIO;
+
+    const char *name = path + 1;
+    inode_t inodes[BWFS_INODES];
+    int count = load_inodes(bwfs_folder, inodes);
+
+    for (int i = 0; i < count; ++i) {
+        if (inodes[i].used && strcmp(inodes[i].filename, name) == 0) {
+            off_t result = 0;
+
+            switch (whence) {
+                case SEEK_SET:
+                    result = offset;
+                    break;
+                case SEEK_CUR:
+                    result = fi->fh + offset;
+                    break;
+                case SEEK_END:
+                    result = inodes[i].size + offset;
+                    break;
+                default:
+                    return -EINVAL;
+            }
+
+            if (result < 0)
+                return -EINVAL;
+
+            return result;
+        }
+    }
+
+    return -ENOENT;
+}
+int bwfs_open(const char *path, struct fuse_file_info *fi) {
+    printf("📂 open: %s\n", path);
+
+    if (!bwfs_folder)
+        return -EIO;
+
+    if (strcmp(path, "/") == 0)
+        return -EISDIR;
+
+    const char *name = path + 1;
+    inode_t inodes[BWFS_INODES];
+    int count = load_inodes(bwfs_folder, inodes);
+
+    for (int i = 0; i < count; ++i) {
+        if (inodes[i].used &&
+            strcmp(inodes[i].filename, name) == 0 &&
+            !inodes[i].is_directory) {
+            // Podés guardar info en fi->fh si lo necesitás luego
+            return 0;
+        }
+    }
+
+    return -ENOENT;
+}

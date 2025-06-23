@@ -37,6 +37,15 @@ int main(int argc, char *argv[]) {
         .utimens = bwfs_utimens,
         .write = bwfs_write,
         .read   = bwfs_read,
+        .unlink = bwfs_unlink,
+        .rmdir  = bwfs_rmdir,
+        .rename = bwfs_rename,
+        .opendir = bwfs_opendir,
+        .statfs = bwfs_statfs,
+        .access = bwfs_access,
+        .lseek = bwfs_lseek,
+        .open = bwfs_open,
+
     };
 
     char *fuse_argv[] = {
