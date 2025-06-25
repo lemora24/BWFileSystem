@@ -118,10 +118,11 @@ int find_free_block(const char *folder) {
     fread(block_bitmap, sizeof(uint8_t), BWFS_MAX_BLOCKS, f);
     fclose(f);
 
-    for (int i = 0; i < BWFS_MAX_BLOCKS; ++i) {
+    for (int i = 6; i < BWFS_MAX_BLOCKS; ++i) {
         if (block_bitmap[i] == 0)
             return i;
     }
+    
 
     return -1;  // no hay bloques libres
 }

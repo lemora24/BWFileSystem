@@ -197,6 +197,8 @@ int bwfs_create(const char *path, mode_t mode, struct fuse_file_info *fi) {
     new_inode.size = 0;
     new_inode.created_at = time(NULL);
     new_inode.modified_at = time(NULL);
+    memset(new_inode.blocks, -1, sizeof(new_inode.blocks));
+
 
     // Guardar el inodo en disco
     save_inode(bwfs_folder, idx, &new_inode);
@@ -256,68 +258,80 @@ int bwfs_write(const char *path, const char *buf, size_t size, off_t offset, str
 
     for (int i = 0; i < count; ++i) {
         if (inodes[i].used && strcmp(inodes[i].filename, name) == 0) {
-            int block = inodes[i].blocks[0];
+            const size_t block_size = 125000;
+            size_t written = 0;
+            size_t remaining = size;
+            off_t current_offset = offset;
 
-            // Si no hay bloque asignado aún, pedimos uno
-            if (block < 0 || block >= BLOCK_COUNT) {
-                block = find_free_block(bwfs_folder);
-                if (block < 0) return -ENOSPC;
-                inodes[i].blocks[0] = block;
-            }
+            while (remaining > 0) {
+                int block_idx = current_offset / block_size;
+                off_t block_offset = current_offset % block_size;
+                size_t chunk = (remaining > block_size - block_offset) ? (block_size - block_offset) : remaining;
 
-            char filepath[256];
-            snprintf(filepath, sizeof(filepath), "%s/block_%03d.pbm", bwfs_folder, block);
+                if (block_idx >= 100)
+                    return -EFBIG;  // demasiados bloques
 
-            // Leer encabezado y datos existentes
-            FILE *f = fopen(filepath, "r");
-            if (!f) return -EIO;
-
-            // Saltar encabezado
-            char line1[64], line2[64], line3[64];
-            fgets(line1, sizeof(line1), f);
-            fgets(line2, sizeof(line2), f);
-            fgets(line3, sizeof(line3), f);
-
-            // Leer todo el bitmap actual (hasta 1000000 bits = 125000 bytes)
-            unsigned char current_data[125000] = {0};
-            int bit_index = 0;
-            char ch;
-            while (fscanf(f, " %c", &ch) == 1 && bit_index < 1000000) {
-                if (ch != '0' && ch != '1') continue;
-                int byte_idx = bit_index / 8;
-                current_data[byte_idx] = (current_data[byte_idx] << 1) | (ch - '0');
-                bit_index++;
-            }
-            fclose(f);
-
-            // Insertar nuevos datos respetando offset
-            if (offset + size > sizeof(current_data))
-                size = sizeof(current_data) - offset;  // evitar overflow
-
-            memcpy(current_data + offset, buf, size);
-
-            // Reescribir el archivo desde cero
-            f = fopen(filepath, "w");
-            if (!f) return -EIO;
-
-            fprintf(f, "P1\n# Bloque BWFS\n1000 1000\n");
-            int written_bits = 0;
-            for (int i = 0; i < sizeof(current_data) && written_bits < 1000000; ++i) {
-                for (int b = 7; b >= 0 && written_bits < 1000000; --b) {
-                    int bit = (current_data[i] >> b) & 1;
-                    fprintf(f, "%d ", bit);
-                    written_bits++;
-                    if (written_bits % 1000 == 0) fprintf(f, "\n");
+                if (inodes[i].blocks[block_idx] == -1) {
+                    int newblock = find_free_block(bwfs_folder);
+                    if (newblock < 0) return -ENOSPC;
+                    inodes[i].blocks[block_idx] = newblock;
+                    update_bitmap_block(bwfs_folder, newblock, 1);
                 }
-            }
 
-            fclose(f);
+                int blk = inodes[i].blocks[block_idx];
+                char filepath[256];
+                snprintf(filepath, sizeof(filepath), "%s/block_%03d.pbm", bwfs_folder, blk);
+
+                // Leer datos existentes
+                unsigned char data[block_size];
+                memset(data, 0, block_size);
+                
+                FILE *f = fopen(filepath, "r");
+                if (f) {
+                    char header[64];
+                    fgets(header, sizeof(header), f);
+                    fgets(header, sizeof(header), f);
+                    fgets(header, sizeof(header), f);
+
+                    int bit_index = 0;
+                    char ch;
+                    while (fscanf(f, " %c", &ch) == 1 && bit_index < block_size * 8) {
+                        if (ch != '0' && ch != '1') continue;
+                        int byte_idx = bit_index / 8;
+                        data[byte_idx] = (data[byte_idx] << 1) | (ch - '0');
+                        bit_index++;
+                    }
+                    fclose(f);
+                }
+
+                // Escribir los nuevos datos en memoria
+                memcpy(data + block_offset, buf + written, chunk);
+
+                // Escribir el bloque entero a disco
+                FILE *fw = fopen(filepath, "w");
+                if (!fw) return -EIO;
+
+                fprintf(fw, "P1\n# Bloque BWFS\n1000 1000\n");
+                int written_bits = 0;
+                for (int b = 0; b < block_size; ++b) {
+                    for (int j = 7; j >= 0 && written_bits < 1000000; --j) {
+                        int bit = (data[b] >> j) & 1;
+                        fprintf(fw, "%d ", bit);
+                        written_bits++;
+                        if (written_bits % 1000 == 0)
+                            fprintf(fw, "\n");
+                    }
+                }
+                fclose(fw);
+
+                written += chunk;
+                current_offset += chunk;
+                remaining -= chunk;
+            }
 
             inodes[i].size = (offset + size > inodes[i].size) ? (offset + size) : inodes[i].size;
             inodes[i].modified_at = time(NULL);
             save_inode(bwfs_folder, i, &inodes[i]);
-
-            update_bitmap_block(bwfs_folder, block, 1);
 
             return size;
         }
@@ -328,7 +342,6 @@ int bwfs_write(const char *path, const char *buf, size_t size, off_t offset, str
 
 int bwfs_read(const char *path, char *buf, size_t size, off_t offset, struct fuse_file_info *fi) {
     (void)fi;
-
     printf("📖 read: %s (offset: %ld, size: %zu)\n", path, offset, size);
 
     if (!bwfs_folder)
@@ -343,53 +356,55 @@ int bwfs_read(const char *path, char *buf, size_t size, off_t offset, struct fus
             if (offset >= inodes[i].size)
                 return 0;
 
-            int bytes_to_read = (offset + size > inodes[i].size) ? (inodes[i].size - offset) : size;
-            int block = inodes[i].blocks[0];
+            const size_t block_size = 125000;
+            size_t remaining = (offset + size > inodes[i].size) ? (inodes[i].size - offset) : size;
+            size_t read_bytes = 0;
+            off_t current_offset = offset;
 
-            if (block < 0 || block >= BLOCK_COUNT)
-                return -EIO;
+            while (remaining > 0) {
+                int block_idx = current_offset / block_size;
+                off_t block_offset = current_offset % block_size;
+                size_t chunk = (remaining > block_size - block_offset) ? (block_size - block_offset) : remaining;
 
-            char filepath[256];
-            snprintf(filepath, sizeof(filepath), "%s/block_%03d.pbm", bwfs_folder, block);
+                if (block_idx >= 100)
+                    break;
 
-            FILE *f = fopen(filepath, "r");
-            if (!f)
-                return -EIO;
+                int blk = inodes[i].blocks[block_idx];
+                if (blk < 0 || blk >= BLOCK_COUNT)
+                    break;
 
-            // Saltar encabezado (3 líneas)
-            char header[256];
-            fgets(header, sizeof(header), f);  // P1
-            fgets(header, sizeof(header), f);  // # comentario
-            fgets(header, sizeof(header), f);  // dimensiones
+                char filepath[256];
+                snprintf(filepath, sizeof(filepath), "%s/block_%03d.pbm", bwfs_folder, blk);
 
-            int bit_index = 0, byte_index = 0;
-            unsigned char byte = 0;
-            char bitchar;
-            while ((fscanf(f, " %c", &bitchar) == 1) && byte_index < (int)(offset + bytes_to_read)) {
-                if (bitchar != '0' && bitchar != '1')
-                    continue;
+                FILE *f = fopen(filepath, "r");
+                if (!f) break;
 
-                byte = (byte << 1) | (bitchar - '0');
-                bit_index++;
+                char line[64];
+                fgets(line, sizeof(line), f);
+                fgets(line, sizeof(line), f);
+                fgets(line, sizeof(line), f);
 
-                if (bit_index == 8) {
-                    if (byte_index >= (int)offset)
-                        buf[byte_index - offset] = byte;
-                    byte_index++;
-                    bit_index = 0;
-                    byte = 0;
+                unsigned char data[block_size];
+                memset(data, 0, block_size);
+                int bit_index = 0;
+                char ch;
+                while (fscanf(f, " %c", &ch) == 1 && bit_index < block_size * 8) {
+                    if (ch != '0' && ch != '1') continue;
+                    int byte_idx = bit_index / 8;
+                    data[byte_idx] = (data[byte_idx] << 1) | (ch - '0');
+                    bit_index++;
                 }
+                fclose(f);
+
+                memcpy(buf + read_bytes, data + block_offset, chunk);
+
+                read_bytes += chunk;
+                current_offset += chunk;
+                remaining -= chunk;
             }
 
-            if (bit_index > 0 && byte_index >= (int)offset && byte_index < (int)(offset + bytes_to_read)) {
-                byte <<= (8 - bit_index);
-                buf[byte_index - offset] = byte;
-                byte_index++;
-            }
-
-            fclose(f);
-            printf("✅ Se leyeron %d bytes\n", byte_index - offset);
-            return byte_index - offset;
+            printf("✅ Se leyeron %zu bytes\n", read_bytes);
+            return read_bytes;
         }
     }
 
