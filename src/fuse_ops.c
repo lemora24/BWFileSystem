@@ -8,6 +8,7 @@
 #include <linux/stat.h>
 #include <fuse3/fuse.h>
 #include <fcntl.h> 
+#include <ctype.h>
 #include "../includes/fuse_ops.h"
 #include "../includes/bwfs.h"
 #include "../includes/utils.h"
@@ -71,46 +72,55 @@ int bwfs_getattr(const char *path, struct stat *stbuf, struct fuse_file_info *fi
 
 int bwfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
     off_t offset, struct fuse_file_info *fi, enum fuse_readdir_flags flags) {
-(void)offset;
-(void)fi;
-(void)flags;
+    
+    (void)offset;
+    (void)fi;
+    (void)flags;
 
-if (!bwfs_folder) {
-fprintf(stderr, "❌ Error: bwfs_folder es NULL en readdir\n");
-return -EIO;
+    if (!bwfs_folder) {
+        fprintf(stderr, "❌ Error: bwfs_folder es NULL en readdir\n");
+        return -EIO;
+    }
+
+    if (strcmp(path, "/") != 0)
+        return -ENOENT;
+
+    // Entradas obligatorias
+    filler(buf, ".", NULL, 0, 0);
+    filler(buf, "..", NULL, 0, 0);
+
+    // Cargar los inodos
+    inode_t inodes[BWFS_INODES];
+    int count = load_inodes(bwfs_folder, inodes);
+
+    for (int i = 0; i < BWFS_INODES; ++i) {
+        if (!inodes[i].used || !inodes[i].is_directory)
+            continue;
+
+        // Terminar la cadena correctamente
+        inodes[i].filename[BWFS_FILENAME - 1] = '\0';
+
+        // Evitar nombres vacíos
+        if (strlen(inodes[i].filename) == 0)
+            continue;
+
+        // Evitar basura: aceptar solo si empieza con letra o número
+        char c = inodes[i].filename[0];
+        if (!(isalpha(c) || isdigit(c)))
+            continue;
+
+        // Opción adicional: evitar nombres llenos de ceros o espacios
+        if (strspn(inodes[i].filename, "0 ") > 10)
+            continue;
+
+        // Mostrar nombre válido
+        printf("📂 readdir: inodo %d → nombre: \"%s\"\n", i, inodes[i].filename);
+        filler(buf, inodes[i].filename, NULL, 0, 0);
+    }
+
+    return 0;
 }
 
-if (strcmp(path, "/") != 0)
-return -ENOENT;
-
-// Entradas obligatorias
-filler(buf, ".", NULL, 0, 0);
-filler(buf, "..", NULL, 0, 0);
-
-// Cargar los inodos
-inode_t inodes[BWFS_INODES];
-int count = load_inodes(bwfs_folder, inodes);
-printf("📦 Se leyeron %d inodos\n", count);
-
-for (int i = 0; i < BWFS_INODES; ++i) {
-    if (!inodes[i].used)
-        continue;
-
-    // Asegurar que el nombre esté correctamente terminado
-    inodes[i].filename[BWFS_FILENAME - 1] = '\0';
-
-    // Evitar nombres vacíos o corruptos
-    if (strlen(inodes[i].filename) == 0)
-        continue;
-
-    printf("📂 readdir: inodo %d → nombre: \"%s\"\n", i, inodes[i].filename);
-    filler(buf, inodes[i].filename, NULL, 0, 0);
-}
-
-
-
-return 0;
-}
 
 int bwfs_mkdir(const char *path, mode_t mode) {
     (void) mode;
@@ -565,8 +575,6 @@ int bwfs_rename(const char *from, const char *to, unsigned int flags) {
     return -ENOENT;
 }
 int bwfs_opendir(const char *path, struct fuse_file_info *fi) {
-    printf("📂 opendir: %s\n", path);
-
     if (!bwfs_folder)
         return -EIO;
 
