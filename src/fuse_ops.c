@@ -94,30 +94,25 @@ int bwfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
     int count = load_inodes(bwfs_folder, inodes);
 
     for (int i = 0; i < BWFS_INODES; ++i) {
-        if (!inodes[i].used || !inodes[i].is_directory)
+        if (!inodes[i].used)
             continue;
-
-        // Terminar la cadena correctamente
-        inodes[i].filename[BWFS_FILENAME - 1] = '\0';
-
-        // Evitar nombres vacíos
+    
         if (strlen(inodes[i].filename) == 0)
             continue;
-
-        // Evitar basura: aceptar solo si empieza con letra o número
-        char c = inodes[i].filename[0];
-        if (!(isalpha(c) || isdigit(c)))
+    
+        // Evitar basura
+        int valido = 0;
+        for (int j = 0; j < BWFS_FILENAME && inodes[i].filename[j] != '\0'; ++j) {
+            if (isalnum((unsigned char)inodes[i].filename[j])) {
+                valido = 1;
+                break;
+            }
+        }
+        if (!valido)
             continue;
-
-        // Opción adicional: evitar nombres llenos de ceros o espacios
-        if (strspn(inodes[i].filename, "0 ") > 10)
-            continue;
-
-        // Mostrar nombre válido
-        printf("📂 readdir: inodo %d → nombre: \"%s\"\n", i, inodes[i].filename);
+    
         filler(buf, inodes[i].filename, NULL, 0, 0);
-    }
-
+    }    
     return 0;
 }
 

@@ -23,4 +23,7 @@ int bwfs_statfs(const char *path, struct statvfs *stbuf);
 int bwfs_access(const char *path, int mask);
 off_t bwfs_lseek(const char *path, off_t offset, int whence, struct fuse_file_info *fi);
 int bwfs_open(const char *path, struct fuse_file_info *fi);
+int bwfs_flush(const char *path, struct fuse_file_info *fi);
+int bwfs_fsync(const char *path, int isdatasync, struct fuse_file_info *fi);
+
 #endif

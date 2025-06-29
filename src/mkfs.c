@@ -36,6 +36,9 @@ void write_superblock(const char *path) {
         exit(1);
     }
 
+    const long offset_binario = 2000000;  // 2 MB: suficiente espacio después de imagen
+    fseek(f, offset_binario, SEEK_SET);
+
     superblock_t sb;
     sb.magic = BWFS_MAGIC;
     sb.total_blocks = BLOCK_COUNT;
@@ -53,27 +56,25 @@ void write_inode_table(const char *path) {
     memset(&empty_inode, 0, sizeof(inode_t));
 
     int inodes_per_block = BWFS_BLOCK_SIZE / sizeof(inode_t);
-    int total_inodes = BWFS_INODES;
-    int written = 0;
+    const long offset_binario = 2000000;
 
     for (int i = 0; i < INODE_BLOCKS; ++i) {
         char filename[256];
         snprintf(filename, sizeof(filename), "%s/block_%03d.pbm", path, 1 + i);
-        FILE *f = fopen(filename, "ab");
+        FILE *f = fopen(filename, "r+b");
         if (!f) {
             perror("Error escribiendo inodos");
             exit(1);
         }
 
-        for (int j = 0; j < inodes_per_block && written < total_inodes; ++j) {
+        fseek(f, offset_binario, SEEK_SET);
+        for (int j = 0; j < inodes_per_block; ++j)
             fwrite(&empty_inode, sizeof(inode_t), 1, f);
-            written++;
-        }
 
         fclose(f);
     }
 
-    printf("✅ Tabla de inodos inicializada (%d inodos).\n", written);
+    printf("✅ Tabla de inodos inicializada (%d inodos).\n", BWFS_INODES);
 }
 
 void write_bitmaps(const char *path) {
@@ -85,6 +86,9 @@ void write_bitmaps(const char *path) {
         perror("Error escribiendo bitmaps");
         exit(1);
     }
+
+    const long offset_binario = 2000000;  // igual que el superblock
+    fseek(f, offset_binario, SEEK_SET);
 
     uint8_t block_bitmap[BWFS_MAX_BLOCKS] = {0};
     for (int i = 0; i <= 1 + INODE_BLOCKS; ++i)

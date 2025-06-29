@@ -29,22 +29,24 @@ int main(int argc, char *argv[]) {
     printf("📁 Ruta absoluta de canvas/: %s\n", conf.folder);
 
     static struct fuse_operations ops = {
-        .init     = bwfs_init,
-        .getattr  = bwfs_getattr,
-        .readdir  = bwfs_readdir,
-        .mkdir    = bwfs_mkdir,
+        .init = bwfs_init,
+        .getattr = bwfs_getattr,
+        .readdir = bwfs_readdir,
+        .mkdir = bwfs_mkdir,
         .create = bwfs_create,
         .utimens = bwfs_utimens,
         .write = bwfs_write,
-        .read   = bwfs_read,
+        .read = bwfs_read,
         .unlink = bwfs_unlink,
-        .rmdir  = bwfs_rmdir,
+        .rmdir = bwfs_rmdir,
         .rename = bwfs_rename,
         .opendir = bwfs_opendir,
         .statfs = bwfs_statfs,
         .access = bwfs_access,
         .lseek = bwfs_lseek,
         .open = bwfs_open,
+        .flush = bwfs_flush,
+        .fsync = bwfs_fsync,
 
     };
 
