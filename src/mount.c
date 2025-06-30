@@ -1,7 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <limits.h>     // Para PATH_MAX
+#include <limits.h>    
 #include "../includes/fuse_ops.h"
 #include <linux/limits.h>
 
@@ -20,13 +20,13 @@ int main(int argc, char *argv[]) {
     // Obtener ruta absoluta del folder del FS
     static char abs_path[PATH_MAX];
     if (!realpath(fs_folder, abs_path)) {
-        perror("❌ Error al obtener ruta absoluta");
+        perror("Error al obtener ruta absoluta");
         return 1;
     }
 
     conf.folder = abs_path;
 
-    printf("📁 Ruta absoluta de canvas/: %s\n", conf.folder);
+    printf("Ruta de canvas/: %s\n", conf.folder);
 
     static struct fuse_operations ops = {
         .init = bwfs_init,
@@ -53,7 +53,7 @@ int main(int argc, char *argv[]) {
     char *fuse_argv[] = {
         argv[0],
         (char *)mountpoint,
-        "-f"  // foreground
+        "-f" 
     };
 
     struct fuse_args args = FUSE_ARGS_INIT(3, fuse_argv);

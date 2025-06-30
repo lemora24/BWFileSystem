@@ -27,11 +27,21 @@ void read_bitmaps(const char *path, uint8_t *block_bitmap, uint8_t *inode_bitmap
         exit(1);
     }
 
-    fseek(f, - (BWFS_MAX_BLOCKS + BWFS_INODES), SEEK_END);
+    fseek(f, 0, SEEK_END);
+    long size = ftell(f);
+    long offset = size - (BWFS_MAX_BLOCKS + BWFS_INODES);
+    if (offset < 0) {
+        fprintf(stderr, "❌ El archivo %s es demasiado pequeño para contener bitmaps\n", filename);
+        fclose(f);
+        exit(1);
+    }
+
+    fseek(f, offset, SEEK_SET);
     fread(block_bitmap, sizeof(uint8_t), BWFS_MAX_BLOCKS, f);
     fread(inode_bitmap, sizeof(uint8_t), BWFS_INODES, f);
     fclose(f);
 }
+
 
 void print_bitmap(const char *label, const uint8_t *bitmap, int size) {
     printf("🧾 %s:\n", label);

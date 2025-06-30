@@ -23,7 +23,7 @@ void *bwfs_init(struct fuse_conn_info *conn, struct fuse_config *cfg) {
     const struct bwfs_config *conf = fuse_get_context()->private_data;
     bwfs_folder = conf->folder;
 
-    printf("🎮 BWFS montado correctamente.\n");
+    printf("BWFS montado correctamente\n");
     return NULL;
 }
 
@@ -33,7 +33,7 @@ int bwfs_getattr(const char *path, struct stat *stbuf, struct fuse_file_info *fi
     memset(stbuf, 0, sizeof(struct stat));
 
     if (!bwfs_folder) {
-        fprintf(stderr, "❌ Error: bwfs_folder es NULL en getattr\n");
+        fprintf(stderr, "Error: bwfs_folder es NULL en getattr\n");
         return -EIO;
     }
 
@@ -72,7 +72,7 @@ int bwfs_getattr(const char *path, struct stat *stbuf, struct fuse_file_info *fi
 
 int bwfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
     off_t offset, struct fuse_file_info *fi, enum fuse_readdir_flags flags) {
-    
+
     (void)offset;
     (void)fi;
     (void)flags;
@@ -93,29 +93,35 @@ int bwfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
     inode_t inodes[BWFS_INODES];
     int count = load_inodes(bwfs_folder, inodes);
 
-    for (int i = 0; i < BWFS_INODES; ++i) {
+    for (int i = 0; i < count; ++i) {
         if (!inodes[i].used)
             continue;
-    
+
+        // Forzar terminación segura
+        inodes[i].filename[BWFS_FILENAME - 1] = '\0';
+
+        // Ignorar strings vacíos
         if (strlen(inodes[i].filename) == 0)
             continue;
-    
-        // Evitar basura
-        int valido = 0;
-        for (int j = 0; j < BWFS_FILENAME && inodes[i].filename[j] != '\0'; ++j) {
-            if (isalnum((unsigned char)inodes[i].filename[j])) {
-                valido = 1;
+
+        // Validar caracteres imprimibles
+        int valido = 1;
+        for (int j = 0; j < strlen(inodes[i].filename); ++j) {
+            if (!isprint((unsigned char)inodes[i].filename[j])) {
+                valido = 0;
                 break;
             }
         }
+
         if (!valido)
             continue;
-    
+
+        // Mostrar entrada válida
         filler(buf, inodes[i].filename, NULL, 0, 0);
-    }    
+    }
+
     return 0;
 }
-
 
 int bwfs_mkdir(const char *path, mode_t mode) {
     (void) mode;
@@ -137,11 +143,12 @@ int bwfs_mkdir(const char *path, mode_t mode) {
     if (idx < 0) return -ENOSPC;
 
     inode_t new_inode = {0};
+
+    strncpy(new_inode.filename, name, BWFS_FILENAME - 1);
+    new_inode.filename[BWFS_FILENAME - 1] = '\0';
+
     new_inode.used = 1;
     new_inode.is_directory = 1;
-    strncpy(new_inode.filename, name, BWFS_FILENAME);
-    new_inode.filename[BWFS_FILENAME - 1] = '\0'; // asegurá terminación nula
-    printf("📛 Nombre guardado: %s\n", new_inode.filename);
     new_inode.size = 0;
     new_inode.created_at = time(NULL);
     new_inode.modified_at = time(NULL);
@@ -151,80 +158,100 @@ int bwfs_mkdir(const char *path, mode_t mode) {
 
     char bpath[256];
     snprintf(bpath, sizeof(bpath), "%s/block_%03d.pbm", bwfs_folder, 1 + INODE_BLOCKS);
+    
     FILE *f = fopen(bpath, "r+b");
-    if (!f)
+    if (!f) {
+        perror("❌ No se pudo abrir el archivo del bitmap de inodos");
         return -EIO;
-
-    fseek(f, -BWFS_INODES, SEEK_END);
+    }
+    
+    // Determinar offset exacto del bitmap de inodos (al final del archivo)
+    fseek(f, 0, SEEK_END);
+    long filesize = ftell(f);
+    long offset_inodo_bitmap = filesize - BWFS_INODES;
+    
+    if (offset_inodo_bitmap < 0) {
+        fprintf(stderr, "❌ Archivo %s demasiado pequeño para contener bitmap\n", bpath);
+        fclose(f);
+        return -EIO;
+    }
+    
+    // Leer, modificar, y sobrescribir bitmap
+    fseek(f, offset_inodo_bitmap, SEEK_SET);
     uint8_t bitmap[BWFS_INODES];
     fread(bitmap, sizeof(uint8_t), BWFS_INODES, f);
-
-    printf("🧾 Bitmap antes: ");
-    for (int i = 0; i < 10; ++i) printf("%d", bitmap[i]);
-    printf("\n");
-
-    bitmap[idx] = 1;
-
-    printf("🧾 Bitmap después: ");
-    for (int i = 0; i < 10; ++i) printf("%d", bitmap[i]);
-    printf("\n");
-
-    fseek(f, -BWFS_INODES, SEEK_END);
+    
+    bitmap[idx] = 1;  // Marcar inodo como usado
+    
+    fseek(f, offset_inodo_bitmap, SEEK_SET);
     fwrite(bitmap, sizeof(uint8_t), BWFS_INODES, f);
     fclose(f);
-
-    return 0;
+    
 }
 
 
-
 int bwfs_create(const char *path, mode_t mode, struct fuse_file_info *fi) {
-    (void) fi;  // por ahora no usamos fi
+    (void) fi;
+    (void) mode;
     printf("📝 create: %s\n", path);
 
     if (strcmp(path, "/") == 0)
         return -EEXIST;
 
-    // Extraer nombre de archivo (sin el slash inicial)
     const char *name = path + 1;
 
-    // Buscar un inodo libre
     int idx = find_free_inode(bwfs_folder);
     printf("🔍 Resultado de find_free_inode(): %d\n", idx);
     if (idx < 0)
         return -ENOSPC;
 
-    // Crear y llenar el nuevo inodo
-    inode_t new_inode = {0};
+    inode_t new_inode = {0};  // limpia todo
+
+    strncpy(new_inode.filename, name, BWFS_FILENAME - 1);
+    new_inode.filename[BWFS_FILENAME - 1] = '\0';  // asegurá null-terminado
+
     new_inode.used = 1;
-    new_inode.is_directory = 0;  // es archivo, no carpeta
-    strncpy(new_inode.filename, name, BWFS_FILENAME);
+    new_inode.is_directory = 0;
     new_inode.size = 0;
     new_inode.created_at = time(NULL);
     new_inode.modified_at = time(NULL);
-    memset(new_inode.blocks, -1, sizeof(new_inode.blocks));
+    for (int i = 0; i < 12; ++i) new_inode.blocks[i] = -1;
 
-
-    // Guardar el inodo en disco
     save_inode(bwfs_folder, idx, &new_inode);
     printf("📌 Asignando inodo #%d para archivo %s\n", idx, name);
 
-    // Actualizar bitmap de inodos
     char bpath[256];
     snprintf(bpath, sizeof(bpath), "%s/block_%03d.pbm", bwfs_folder, 1 + INODE_BLOCKS);
+
     FILE *f = fopen(bpath, "r+b");
     if (!f)
+    {
+        perror("No se pudo abrir el archivo del bitmap de inodos");
         return -EIO;
+    }
 
-    fseek(f, -BWFS_INODES, SEEK_END);
+    // Determinar offset exacto del bitmap de inodos (al final del archivo)
+    fseek(f, 0, SEEK_END);
+    long filesize = ftell(f);
+    long offset_inodo_bitmap = filesize - BWFS_INODES;
+
+    if (offset_inodo_bitmap < 0)
+    {
+        fprintf(stderr, "Archivo %s demasiado pequeño para contener bitmap\n", bpath);
+        fclose(f);
+        return -EIO;
+    }
+
+    // Leer, modificar, y sobrescribir bitmap
+    fseek(f, offset_inodo_bitmap, SEEK_SET);
     uint8_t bitmap[BWFS_INODES];
     fread(bitmap, sizeof(uint8_t), BWFS_INODES, f);
-    bitmap[idx] = 1;
-    fseek(f, -BWFS_INODES, SEEK_END);
+
+    bitmap[idx] = 1; // Marcar inodo como usado
+
+    fseek(f, offset_inodo_bitmap, SEEK_SET);
     fwrite(bitmap, sizeof(uint8_t), BWFS_INODES, f);
     fclose(f);
-
-    return 0;
 }
 int bwfs_utimens(const char *path, const struct timespec tv[2], struct fuse_file_info *fi) {
     (void)fi;

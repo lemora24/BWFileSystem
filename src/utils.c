@@ -39,9 +39,6 @@ int save_inode(const char *folder, int index, const inode_t *inode) {
 }
 
 int find_free_inode(const char *folder) {
-    uint8_t bitmap[BWFS_INODES] = {0};
-    const long offset_binario = 2000000;
-
     char path[256];
     snprintf(path, sizeof(path), "%s/block_%03d.pbm", folder, 1 + INODE_BLOCKS);
     FILE *f = fopen(path, "rb");
@@ -50,9 +47,25 @@ int find_free_inode(const char *folder) {
         return -1;
     }
 
-    fseek(f, offset_binario + BWFS_MAX_BLOCKS, SEEK_SET);  // Bitmap de inodos está después del de bloques
+    // Leer desde el offset exacto al final del archivo
+    fseek(f, 0, SEEK_END);
+    long size = ftell(f);
+    long offset = size - BWFS_INODES;
+
+    if (offset < 0) {
+        fprintf(stderr, "❌ Archivo %s demasiado pequeño para bitmap\n", path);
+        fclose(f);
+        return -1;
+    }
+
+    fseek(f, offset, SEEK_SET);
+    uint8_t bitmap[BWFS_INODES];
     fread(bitmap, sizeof(uint8_t), BWFS_INODES, f);
     fclose(f);
+
+    printf("🧾 Bitmap leído: ");
+    for (int i = 0; i < 10; ++i) printf("%d", bitmap[i]);
+    printf("\n");
 
     for (int i = 0; i < BWFS_INODES; ++i)
         if (bitmap[i] == 0)
@@ -60,6 +73,7 @@ int find_free_inode(const char *folder) {
 
     return -1;
 }
+
 
 int find_free_block(const char *folder) {
     uint8_t block_bitmap[BWFS_MAX_BLOCKS];
@@ -69,7 +83,7 @@ int find_free_block(const char *folder) {
     snprintf(bpath, sizeof(bpath), "%s/block_%03d.pbm", folder, 1 + INODE_BLOCKS);
     FILE *f = fopen(bpath, "rb");
     if (!f) {
-        perror("❌ Error abriendo archivo de bitmap de bloques");
+        perror("Error abriendo archivo de bitmap de bloques");
         return -1;
     }
 
@@ -91,7 +105,7 @@ void update_bitmap_block(const char *folder, int block, int used) {
     snprintf(bpath, sizeof(bpath), "%s/block_%03d.pbm", folder, 1 + INODE_BLOCKS);
     FILE *f = fopen(bpath, "r+b");
     if (!f) {
-        perror("❌ Error actualizando bitmap de bloques");
+        perror("Error actualizando bitmap de bloques");
         return;
     }
 
